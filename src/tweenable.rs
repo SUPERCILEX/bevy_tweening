@@ -412,7 +412,13 @@ impl<T> Tweenable<T> for Tween<T> {
     }
 
     fn is_looping(&self) -> bool {
-        self.tweening_type != TweeningType::Once
+        match self.tweening_type {
+            TweeningType::Once => false,
+            TweeningType::Loop | TweeningType::PingPong => true,
+            TweeningType::LoopTimes(times) | TweeningType::PingPongTimes(times) => {
+                self.times_completed < times
+            }
+        }
     }
 
     fn set_progress(&mut self, progress: f32) {
@@ -437,10 +443,13 @@ impl<T> Tweenable<T> for Tween<T> {
         // Tick the animation clock
         let times_completed = self.clock.tick(delta);
         self.times_completed += times_completed;
-        if times_completed & 1 != 0 && self.tweening_type == TweeningType::PingPong {
+        if times_completed & 1 != 0
+            && (self.tweening_type == TweeningType::PingPong
+                || matches!(self.tweening_type, TweeningType::PingPongTimes(_)))
+        {
             self.direction = !self.direction;
         }
-        let state = if self.is_looping() || times_completed == 0 {
+        let state = if self.is_looping() || self.times_completed == 0 {
             TweenState::Active
         } else {
             TweenState::Completed
@@ -804,7 +813,9 @@ mod tests {
             for tweening_type in &[
                 TweeningType::Once,
                 TweeningType::Loop,
+                TweeningType::LoopTimes(1),
                 TweeningType::PingPong,
+                TweeningType::PingPongTimes(2),
             ] {
                 println!(
                     "TweeningType: type={:?} dir={:?}",
@@ -879,7 +890,7 @@ mod tests {
                                     just_completed,
                                 )
                             }
-                            TweeningType::Loop => {
+                            TweeningType::Loop | TweeningType::LoopTimes(_) => {
                                 let progress = (i as f32 * 0.2).fract();
                                 let times_completed = i / 5;
                                 let just_completed = i % 5 == 0;
@@ -887,16 +898,22 @@ mod tests {
                                     progress,
                                     times_completed,
                                     TweeningDirection::Forward,
-                                    TweenState::Active,
+                                    if *tweening_type == TweeningType::Loop || i < 5 {
+                                        TweenState::Active
+                                    } else {
+                                        TweenState::Completed
+                                    },
                                     just_completed,
                                 )
                             }
-                            TweeningType::PingPong => {
+                            TweeningType::PingPong | TweeningType::PingPongTimes(_) => {
                                 let i5 = i % 5;
                                 let progress = i5 as f32 * 0.2;
                                 let times_completed = i / 5;
                                 let i10 = i % 10;
-                                let direction = if i10 >= 5 {
+                                let direction = if i10 >= 5
+                                    && (*tweening_type == TweeningType::PingPong || i < 10)
+                                {
                                     TweeningDirection::Backward
                                 } else {
                                     TweeningDirection::Forward
@@ -906,7 +923,11 @@ mod tests {
                                     progress,
                                     times_completed,
                                     direction,
-                                    TweenState::Active,
+                                    if *tweening_type == TweeningType::PingPong || i < 10 {
+                                        TweenState::Active
+                                    } else {
+                                        TweenState::Completed
+                                    },
                                     just_completed,
                                 )
                             }
@@ -947,7 +968,16 @@ mod tests {
 
                     // Check actual values
                     assert_eq!(tween.direction(), direction);
-                    assert_eq!(tween.is_looping(), *tweening_type != TweeningType::Once);
+                    assert_eq!(
+                        tween.is_looping(),
+                        match *tweening_type {
+                            TweeningType::Once => false,
+                            TweeningType::Loop | TweeningType::PingPong => true,
+                            TweeningType::LoopTimes(times) | TweeningType::PingPongTimes(times) => {
+                                times_completed < times
+                            }
+                        }
+                    );
                     assert_eq!(actual_state, expected_state);
                     assert!(abs_diff_eq(tween.progress(), progress, 1e-5));
                     assert_eq!(tween.times_completed(), times_completed);
