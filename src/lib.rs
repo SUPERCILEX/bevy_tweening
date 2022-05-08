@@ -167,10 +167,14 @@ pub enum TweeningType {
     Once,
     /// Loop the animation indefinitely, restarting from the start each time the end is reached.
     Loop,
+    /// [Loop][TweeningType::Loop]s N times.
+    LoopTimes(u32),
     /// Loop the animation back and forth, changing direction each time an endpoint is reached.
     /// A complete cycle start -> end -> start always counts as 2 loop iterations for the various
     /// operations where looping matters.
     PingPong,
+    /// [PingPong][TweeningType::PingPong]s N times.
+    PingPongTimes(u32),
 }
 
 impl Default for TweeningType {
