@@ -161,7 +161,10 @@ pub use lens::Lens;
 pub use plugin::{
     asset_animator_system, component_animator_system, AnimationSystem, TweeningPlugin,
 };
-pub use tweenable::{Delay, Sequence, Tracks, Tween, TweenCompleted, TweenState, Tweenable};
+pub use tweenable::{
+    BoxedTweenable, Delay, DynTweenable, Sequence, Tracks, Tween, TweenCompleted, TweenState,
+    Tweenable,
+};
 
 /// Type of looping for a tween animation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,7 +309,7 @@ impl std::ops::Not for TweeningDirection {
 pub struct Animator<T: Component> {
     /// Control if this animation is played or not.
     pub state: AnimatorState,
-    tweenable: Option<Box<dyn Tweenable<T> + Send + Sync + 'static>>,
+    tweenable: Option<BoxedTweenable<T>>,
     speed: f32,
 }
 
@@ -452,7 +455,7 @@ impl<T: Component> Animator<T> {
 pub struct AssetAnimator<T: Asset> {
     /// Control if this animation is played or not.
     pub state: AnimatorState,
-    tweenable: Option<Box<dyn Tweenable<T> + Send + Sync + 'static>>,
+    tweenable: Option<BoxedTweenable<T>>,
     handle: Handle<T>,
     speed: f32,
 }
