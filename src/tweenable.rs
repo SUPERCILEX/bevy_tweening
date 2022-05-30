@@ -1,4 +1,6 @@
+use std::mem::{size_of, MaybeUninit};
 use std::time::Duration;
+use std::{mem, ptr};
 
 use bevy::prelude::*;
 
@@ -203,6 +205,8 @@ impl<T> Tweenable<T> for BoxedTweenable<T> {
     }
 }
 
+const MAX_DYN_INLINE_BYTES: usize = 128;
+
 /// An emulated dynamic tweenabled used to optimize out allocations in [`Sequence`]s and [`Tracks`].
 /// You should only ever use [`DynTweenable::from`][From::from].
 ///
@@ -237,53 +241,91 @@ impl<T> Tweenable<T> for BoxedTweenable<T> {
 /// ```
 pub enum DynTweenable<T> {
     #[doc(hidden)]
+    Inlined(*const (), [MaybeUninit<u8>; MAX_DYN_INLINE_BYTES]),
+    #[doc(hidden)]
     Boxed(BoxedTweenable<T>),
-    #[doc(hidden)]
-    Delay(Delay),
-    #[doc(hidden)]
-    Sequence(Sequence<T>),
-    #[doc(hidden)]
-    Tracks(Tracks<T>),
-    #[doc(hidden)]
-    Tween(Tween<T>),
+}
+
+// Guarded by DynTweenable::new which requires Send + Sync
+#[allow(unsafe_code)]
+unsafe impl<T> Send for DynTweenable<T> {}
+#[allow(unsafe_code)]
+unsafe impl<T> Sync for DynTweenable<T> {}
+
+#[repr(C)]
+struct DynRepr {
+    data: *const (),
+    vtable: *const (),
+}
+
+impl<T> DynTweenable<T> {
+    /// TODO
+    pub fn new<U: Tweenable<T> + Send + Sync + 'static>(t: U) -> Self {
+        if size_of::<U>() > MAX_DYN_INLINE_BYTES {
+            let boxed: BoxedTweenable<T> = Box::new(t);
+            DynTweenable::from(boxed)
+        } else {
+            let dyn_ptr: &dyn Tweenable<T> = &t;
+            let data_ptr: *const U = &t;
+            let mut bytes = [MaybeUninit::<u8>::uninit(); MAX_DYN_INLINE_BYTES];
+
+            #[allow(unsafe_code)]
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    data_ptr.cast::<u8>(),
+                    bytes.as_mut_ptr().cast::<u8>(),
+                    size_of::<U>(),
+                );
+
+                let repr: DynRepr = mem::transmute(dyn_ptr);
+                Self::Inlined(repr.vtable, bytes)
+            }
+        }
+    }
+
+    fn as_dyn(&self) -> &dyn Tweenable<T> {
+        match self {
+            DynTweenable::Inlined(vtable, bytes) => {
+                #[allow(unsafe_code)]
+                unsafe {
+                    mem::transmute::<_, &dyn Tweenable<T>>(DynRepr {
+                        data: bytes.as_ptr().cast::<()>(),
+                        vtable: *vtable,
+                    })
+                }
+            }
+            DynTweenable::Boxed(b) => b,
+        }
+    }
+
+    fn as_dyn_mut(&mut self) -> &mut dyn Tweenable<T> {
+        match self {
+            DynTweenable::Inlined(vtable, bytes) => {
+                #[allow(unsafe_code)]
+                unsafe {
+                    mem::transmute::<_, &mut dyn Tweenable<T>>(DynRepr {
+                        data: bytes.as_mut_ptr().cast::<()>(),
+                        vtable: *vtable,
+                    })
+                }
+            }
+            DynTweenable::Boxed(b) => b,
+        }
+    }
 }
 
 impl<T> Tweenable<T> for DynTweenable<T> {
     fn duration(&self) -> Duration {
-        match self {
-            Self::Boxed(b) => b.duration(),
-            Self::Delay(d) => Tweenable::<T>::duration(d),
-            Self::Sequence(s) => s.duration(),
-            Self::Tracks(t) => t.duration(),
-            Self::Tween(t) => t.duration(),
-        }
+        self.as_dyn().duration()
     }
     fn is_looping(&self) -> bool {
-        match self {
-            Self::Boxed(b) => b.is_looping(),
-            Self::Delay(d) => Tweenable::<T>::is_looping(d),
-            Self::Sequence(s) => s.is_looping(),
-            Self::Tracks(t) => t.is_looping(),
-            Self::Tween(t) => t.is_looping(),
-        }
+        self.as_dyn().is_looping()
     }
     fn set_progress(&mut self, progress: f32) {
-        match self {
-            Self::Boxed(b) => b.set_progress(progress),
-            Self::Delay(d) => Tweenable::<T>::set_progress(d, progress),
-            Self::Sequence(s) => s.set_progress(progress),
-            Self::Tracks(t) => t.set_progress(progress),
-            Self::Tween(t) => t.set_progress(progress),
-        }
+        self.as_dyn_mut().set_progress(progress)
     }
     fn progress(&self) -> f32 {
-        match self {
-            Self::Boxed(b) => b.progress(),
-            Self::Delay(d) => Tweenable::<T>::progress(d),
-            Self::Sequence(s) => s.progress(),
-            Self::Tracks(t) => t.progress(),
-            Self::Tween(t) => t.progress(),
-        }
+        self.as_dyn().progress()
     }
     fn tick(
         &mut self,
@@ -292,31 +334,13 @@ impl<T> Tweenable<T> for DynTweenable<T> {
         entity: Entity,
         event_writer: &mut EventWriter<TweenCompleted>,
     ) -> TweenState {
-        match self {
-            Self::Boxed(b) => b.tick(delta, target, entity, event_writer),
-            Self::Delay(d) => d.tick(delta, target, entity, event_writer),
-            Self::Sequence(s) => s.tick(delta, target, entity, event_writer),
-            Self::Tracks(t) => t.tick(delta, target, entity, event_writer),
-            Self::Tween(t) => t.tick(delta, target, entity, event_writer),
-        }
+        self.as_dyn_mut().tick(delta, target, entity, event_writer)
     }
     fn times_completed(&self) -> u32 {
-        match self {
-            Self::Boxed(b) => b.times_completed(),
-            Self::Delay(d) => Tweenable::<T>::times_completed(d),
-            Self::Sequence(s) => s.times_completed(),
-            Self::Tracks(t) => t.times_completed(),
-            Self::Tween(t) => t.times_completed(),
-        }
+        self.as_dyn().times_completed()
     }
     fn rewind(&mut self) {
-        match self {
-            Self::Boxed(b) => b.rewind(),
-            Self::Delay(d) => Tweenable::<T>::rewind(d),
-            Self::Sequence(s) => s.rewind(),
-            Self::Tracks(t) => t.rewind(),
-            Self::Tween(t) => t.rewind(),
-        }
+        self.as_dyn_mut().rewind()
     }
 }
 
@@ -326,27 +350,27 @@ impl<T> From<BoxedTweenable<T>> for DynTweenable<T> {
     }
 }
 
-impl<T> From<Delay> for DynTweenable<T> {
+impl<T: 'static> From<Delay> for DynTweenable<T> {
     fn from(d: Delay) -> Self {
-        Self::Delay(d)
+        Self::new(d)
     }
 }
 
-impl<T> From<Sequence<T>> for DynTweenable<T> {
+impl<T: 'static> From<Sequence<T>> for DynTweenable<T> {
     fn from(s: Sequence<T>) -> Self {
-        Self::Sequence(s)
+        Self::new(s)
     }
 }
 
-impl<T> From<Tracks<T>> for DynTweenable<T> {
+impl<T: 'static> From<Tracks<T>> for DynTweenable<T> {
     fn from(t: Tracks<T>) -> Self {
-        Self::Tracks(t)
+        Self::new(t)
     }
 }
 
-impl<T> From<Tween<T>> for DynTweenable<T> {
+impl<T: 'static> From<Tween<T>> for DynTweenable<T> {
     fn from(t: Tween<T>) -> Self {
-        Self::Tween(t)
+        Self::new(t)
     }
 }
 
@@ -675,13 +699,7 @@ impl<T> Sequence<T> {
 
     /// Get the current active tween in the sequence.
     pub fn current(&self) -> &dyn Tweenable<T> {
-        match &self.tweens[self.index()] {
-            DynTweenable::Boxed(b) => b.as_ref(),
-            DynTweenable::Delay(d) => d,
-            DynTweenable::Sequence(s) => s,
-            DynTweenable::Tracks(t) => t,
-            DynTweenable::Tween(t) => t,
-        }
+        self.tweens[self.index()].as_dyn()
     }
 }
 
@@ -922,6 +940,7 @@ impl<T> Tweenable<T> for Delay {
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -940,6 +959,11 @@ mod tests {
     struct CallbackMonitor {
         invoke_count: u64,
         last_reported_count: u32,
+    }
+
+    #[test]
+    fn tween_sizes() {
+        assert!(size_of::<Delay>() < MAX_DYN_INLINE_BYTES);
     }
 
     #[test]
@@ -1352,6 +1376,13 @@ mod tests {
                 end: Quat::from_rotation_x(90_f32.to_radians()),
             },
         );
+        let mut v = Vec::<u8>::new();
+        unsafe {
+            for i in 0..size_of::<Tween<Transform>>() {
+                v.push((&tween1 as *const Tween<_>).cast::<u8>().add(i).read());
+            }
+            dbg!(&v);
+        }
         let mut tracks = Tracks::new([tween1, tween2]);
         assert_eq!(tracks.duration(), Duration::from_secs_f32(1.)); // max(1., 0.8)
         assert!(!tracks.is_looping());

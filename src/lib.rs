@@ -1,15 +1,3 @@
-#![deny(
-    warnings,
-    missing_copy_implementations,
-    trivial_casts,
-    trivial_numeric_casts,
-    unsafe_code,
-    unstable_features,
-    unused_import_braces,
-    unused_qualifications,
-    missing_docs
-)]
-
 //! Tweening animation plugin for the Bevy game engine
 //!
 //! 🍃 Bevy Tweening provides interpolation-based animation between ("tweening") two values, for Bevy components
